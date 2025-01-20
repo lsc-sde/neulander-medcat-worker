@@ -1,0 +1,15 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "FastStream MedCAT Worker",
+            "type": "shell",
+            "command": "faststream run src/main:app --port 8001",
+            "problemMatcher": [
+                "$python"
+            ]
+        }
+    ]
+}
