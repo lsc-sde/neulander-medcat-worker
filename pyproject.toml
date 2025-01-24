@@ -18,4 +18,4 @@ dependencies = [
 dev = ["pre-commit>=4.0.1", "watchfiles>=1.0.3"]
 
 [tool.uv.sources]
-neulander-core = { path = '../../neulander-core/' }
+neulander-core = { path = '../core/' }
