@@ -1,36 +1,46 @@
-import json
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Any
 
-import neulander_core.models.medcat as m
-from azure.storage.blob import (
-    BlobClient,
-    ContainerClient,
-)
+import neulander_core.schema.medcat_schema as m
 from dotenv import find_dotenv, load_dotenv
 from faststream import Context, ContextRepo, Logger
 from faststream.asgi import AsgiFastStream, make_ping_asgi
-from faststream.rabbit import RabbitBroker, RabbitMessage, RabbitQueue
+from faststream.rabbit import RabbitBroker, RabbitMessage
 from medcat.cat import CAT
-from pydantic import AmqpDsn, BaseModel, FilePath, HttpUrl
+from neulander_core.config import WorkerQueues
+from neulander_core.config import settings as cfg
+from neulander_core.crud import AzureBlobStorage
+from neulander_core.schema.core import AzureBlobDocIn, DocOut
 
 load_dotenv(find_dotenv())
 
 
-class MedCATConfig(BaseModel):
-    medcat_model_path: HttpUrl | FilePath
-    rabbitmq_url: AmqpDsn
+__version__ = "0.1.0"
+
+medcat_model_path = os.getenv("MEDCAT_MODEL_PATH", "")
+dummy_mode = os.getenv("DUMMY_MODE")
+
+# Setup Rabbit Broker
+broker = RabbitBroker(url=cfg.rabbitmq_connection_string, max_consumers=1)
+
+# Setup RabbitMQ Queues
+WORKER_NAME = os.getenv("WORKER_NAME", "medcat_14")
+queues = WorkerQueues(worker_name=WORKER_NAME)
+
+##############################################################################
+# Utility functions
+##############################################################################
 
 
-config = MedCATConfig(
-    medcat_model_path=os.environ["MEDCAT_MODEL_PATH"],
-    rabbitmq_url=os.environ["RABBITMQ_URL"],
-)
+def get_ts():
+    return datetime.isoformat(datetime.now())
 
-broker = RabbitBroker(url=config.rabbitmq_url, max_consumers=1)
-qin = RabbitQueue("q-medcat_14-in", durable=True)
-qout = RabbitQueue(name="q-medcat_14-out", durable=True)
+
+##############################################################################
+# Utility functions
+##############################################################################
 
 
 class DummyCAT:
@@ -118,113 +128,119 @@ class DummyCAT:
 @asynccontextmanager
 async def lifespan(context: ContextRepo, logger: Logger):
     # Load medcat model here. This can take a while
+    # Alternatively use a dummy class that mocks MedCAT during development
     try:
-        logger.info("Loading MedCAT models.")
-
-        if type(config.medcat_model_path) is HttpUrl:
-            # get model and load it here
-            pass
-        else:
-            # cat = CAT.load_model_pack(zip_path=str(config.medcat_model_path))
+        if dummy_mode == "true":
+            logger.info("Using DummyCAT for testing only.")
             cat = DummyCAT()
+        else:
+            logger.info(f"Loading MedCAT models from {medcat_model_path}")
+            cat = CAT.load_model_pack(zip_path=medcat_model_path)
 
-            context.set_global("cat", cat)
+        context.set_global("cat", cat)
+
         yield
-    except KeyError as e:
-        logger.critical("MEDCAT_MODEL_PATH environment variable must be set.", *e.args)
-        raise
+
+    except Exception as e:
+        logger.critical("Error loading medcat models", *e.args)
+        raise Exception
+
     finally:
         # do some closing actions here
         pass
 
 
-def get_ts():
-    return datetime.isoformat(datetime.now())
-
-
-async def write_blob(doc_out: m.DocOut, sas_url: HttpUrl):
-    c = ContainerClient.from_container_url(sas_url)
-
-    now = datetime.now()
-
-    blob_path = f"{now.year}/{now.month}/{now.day}/{now.hour}/{doc_out.id}"
-
-    b = c.upload_blob(name=blob_path, data=doc_out.json(), overwrite=True)
-
-    return b.blob_name
-
-
-async def read_blob(sas_url: HttpUrl):
-    bc = BlobClient.from_blob_url(sas_url)
-    # ToDo: Handle timeout if blob storage is not accessible
-    blob = bc.download_blob(timeout=10)
-    blob_content = blob.content_as_text()
-    return json.loads(blob_content)
-
-
-@broker.publisher(queue=qout)
+@broker.publisher(queue=queues.qout)
 @broker.subscriber(
-    queue=qin,
+    queue=queues.qin,
     no_ack=True,
     title="MedCAT Annotation Worker",
 )
-async def processor(
+async def process_message(
     body: dict,
     msg: RabbitMessage,
     logger: Logger,
     cat: CAT = Context("cat"),
 ):
-    # If body is encrypted, decrypt here.
-    # eg. doc: DocIn = decrypt(body)
-    # try:
-    doc_meta = dict()
+    try:
+        # If body is encrypted, decrypt here.
+        # eg. doc: DocIn = decrypt(body)
 
-    doc_meta["start"] = get_ts()
+        # Dictionary for storing logging information
 
-    doc_in = m.DocIn(**body)
+        docin = AzureBlobDocIn(**body)
 
-    sas_url = doc_in.src
+    except Exception as e:
+        out = {
+            "error": e.args,
+            "correlation_id": msg.correlation_id,
+            "message_id": msg.message_id,
+        }
+        response = await broker.publish(
+            message=out,
+            correlation_id=msg.correlation_id,
+            message_id=msg.message_id,
+            queue=queues.qerr,
+        )
+        await msg.reject()
+        return out
 
-    doc = await read_blob(sas_url=sas_url)
-    doc_meta["Blob dowload complete"] = get_ts()
+    try:
+        docmeta: dict[str, Any] = {"start_work": get_ts()}
 
-    result = cat.get_entities(doc["doc_text"])
+        doctext = await AzureBlobStorage(docin.src.unicode_string()).read(docin.docname)
+        # Medcat worker expects the blob to simply contain the document text
+        # If there is additional preprocessing required, that should happen here.
+        # Consider using docin.docext (eg. rtf, pdf, etc. ) to do this.
+        doctext = doctext.decode()
 
-    doc_meta["Annotation complete"] = get_ts()
+        docmeta["doc_length"] = len(doctext)
+        docmeta["blob_downloaded"] = get_ts()
 
-    entities = {k: m.MedcatOutput.validate(v) for k, v in result["entities"].items()}
+        result = cat.get_entities(doctext)
+        entities = {
+            k: m.MedcatEntity.model_validate(v) for k, v in result["entities"].items()
+        }
+        medcatoutput = m.MedcatOutput(
+            docid=docin.docid,
+            text=doctext,
+            entities=entities,
+            docmeta=docmeta,
+            modelmeta=WORKER_NAME,
+        )
 
-    doc_meta["length"] = len(doc["doc_text"])
-    doc_out = m.DocOut(
-        id=doc_in.id,
-        text=doc["doc_text"],
-        entities=entities,
-        model_meta=cat.get_model_card(as_dict=True),
-        doc_meta=doc_meta,
-    )
+        docout = DocOut(docid=docin.docid, response=medcatoutput.model_dump())
+        docmeta["annotation_completed"] = get_ts()
 
-    blob_name = await write_blob(doc_out=doc_out, sas_url=doc_in.dest)
+        response = await AzureBlobStorage(docin.dest.unicode_string()).write(
+            blob_name=f"{docin.docname}.json", data=docout.model_dump_json()
+        )
 
-    doc_meta["Output blob uploaded"] = get_ts()
+        docmeta["blob_uploaded"] = get_ts()
 
-    await msg.ack()
+        await msg.ack()
 
-    return {
-        "id": doc_out.id,
-        "blob_name": blob_name,
-        "correlation_id": msg.correlation_id,
-        "message_id": msg.message_id,
-    }
+        return {
+            "docid": docin.docid,
+            "docname": response.blob_name,
+            "correlation_id": msg.correlation_id,
+            "message_id": msg.message_id,
+        }
 
+    except Exception as e:
+        logger.error(f"Error processing document {docin.docid}: {e}")
 
-# except Exception as e:
-#     logger.error(e)
-#     return {"status": "error"}
+        out = {
+            "docid": docin.docid,
+            "error": str(e),
+            "correlation_id": msg.correlation_id,
+            "message_id": msg.message_id,
+        }
 
-#     await msg.ack()
+        await msg.ack()
 
-# finally:
-#     pass
+    finally:
+        pass
 
 
 app = AsgiFastStream(

@@ -6,7 +6,7 @@
         {
             "label": "FastStream MedCAT Worker",
             "type": "shell",
-            "command": "faststream run src/main:app --port 8001",
+            "command": ".venv/Scripts/activate && faststream run src/main:app --port 8001",
             "problemMatcher": [
                 "$python"
             ]
