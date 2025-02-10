@@ -1,0 +1,15 @@
+name: Docker build and push
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "main"
+
+jobs:
+  buildandpush:
+    uses: lsc-sde/lsc-sde/.github/workflows/docker-release.yaml@main
+    with:
+      imageName: neulander-medcat
+      directory: docker/neulander-medcat
+    secrets: inherit
