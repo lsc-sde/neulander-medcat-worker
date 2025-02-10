@@ -18,3 +18,10 @@ dev = ["pre-commit>=4.0.1", "watchfiles>=1.0.3"]
 
 [tool.uv.sources]
 neulander-core = { path = '../core/' }
+torch = { index = "pytorch" }
+
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cpu/"
+explicit = true

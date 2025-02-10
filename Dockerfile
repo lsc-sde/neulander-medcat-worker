@@ -15,13 +15,13 @@ WORKDIR /home/appuser
 # Change ownership of the application directory
 RUN chown -R appuser:appuser /home/appuser
 
-# Switch to the non-root user
-USER appuser
-
 # Copy the application code
 COPY . /home/appuser
 
 RUN uv add git+https://github.com/lsc-sde/neulander-core && uv sync --no-dev --no-sources --frozen --no-cache
+
+# Switch to the non-root user
+USER appuser
 
 EXPOSE 8000
 
