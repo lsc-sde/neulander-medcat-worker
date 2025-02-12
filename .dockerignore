@@ -144,3 +144,6 @@ __azurite*.*
 __blobstorage__/
 
 .git/
+.github/
+GitVersion.yml
+.vscode/
