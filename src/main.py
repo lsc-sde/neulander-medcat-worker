@@ -1,3 +1,4 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -127,6 +128,26 @@ class DummyCAT:
 # Setup lifespan events
 @asynccontextmanager
 async def lifespan(context: ContextRepo, logger: Logger):
+    # Check if rabbitmq broker is available
+    # If not, try 2 more times before raising an exception
+    retries = 3
+    for attempt in range(retries):
+        try:
+            await broker.connect()
+            break
+        except Exception as e:
+            if attempt < retries - 1:
+                backoff = 5 + attempt * 5
+                logger.warning(
+                    f"Retrying connection to RabbitMQ ({attempt + 1}/{retries}) in {backoff} seconds: {e}"
+                )
+                await asyncio.sleep(backoff)  # exponential(ish) backoff before retrying
+            else:
+                logger.error(
+                    f"Failed to connect to RabbitMQ after {retries} attempts: {e}"
+                )
+                raise
+
     # Load medcat model here. This can take a while
     # Alternatively use a dummy class that mocks MedCAT during development
     try:
@@ -143,7 +164,7 @@ async def lifespan(context: ContextRepo, logger: Logger):
 
     except Exception as e:
         logger.critical("Error loading medcat models", *e.args)
-        raise Exception
+        raise
 
     finally:
         # do some closing actions here
