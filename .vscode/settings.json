@@ -1,5 +1,5 @@
 {
-    "python.defaultInterpreterPath": "${workspaceFolder}/worker_medcat/.venv/Scripts/python",
+    "python.defaultInterpreterPath": "${workspaceFolder}/worker_medcat/.venv",
     "python.analysis.autoImportCompletions": true,
     "python.envFile": "${workspaceFolder}/worker_medcat/.env",
     "python.terminal.activateEnvironment": true,
