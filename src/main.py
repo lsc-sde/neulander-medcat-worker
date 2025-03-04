@@ -2,7 +2,6 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any
 
 import neulander_core.schema.medcat_schema as m
 from dotenv import find_dotenv, load_dotenv
@@ -130,10 +129,12 @@ class DummyCAT:
 async def lifespan(context: ContextRepo, logger: Logger):
     # Check if rabbitmq broker is available
     # If not, try 2 more times before raising an exception
+    logger.info("Setting up lifespan events.")
     retries = 3
     for attempt in range(retries):
         try:
             await broker.connect()
+            logger.info("Successfully connected to RabbitMQ.")
             break
         except Exception as e:
             if attempt < retries - 1:
@@ -157,6 +158,7 @@ async def lifespan(context: ContextRepo, logger: Logger):
         else:
             logger.info(f"Loading MedCAT models from {medcat_model_path}")
             cat = CAT.load_model_pack(zip_path=medcat_model_path)
+            logger.info("Finished loading MedCAT models.")
 
         context.set_global("cat", cat)
 
@@ -192,6 +194,7 @@ async def process_message(
         docin = AzureBlobDocIn(**body)
 
     except Exception as e:
+        logger.error("Error parsing message - {body}. {e}")
         out = {
             "error": e.args,
             "correlation_id": msg.correlation_id,
@@ -207,37 +210,40 @@ async def process_message(
         return out
 
     try:
-        docmeta: dict[str, Any] = {"start_work": get_ts()}
+        docin.docmeta["start_work"] = get_ts()  # type: ignore
 
-        doctext = await AzureBlobStorage(docin.src.unicode_string()).read(docin.docname)
+        logger.info(f"Reading blob {docin.docid}")
+
+        doctext = await AzureBlobStorage(docin.src.unicode_string()).read(docin.docid)
         # Medcat worker expects the blob to simply contain the document text
         # If there is additional preprocessing required, that should happen here.
         # Consider using docin.docext (eg. rtf, pdf, etc. ) to do this.
         doctext = doctext.decode()
 
-        docmeta["doc_length"] = len(doctext)
-        docmeta["blob_downloaded"] = get_ts()
+        docin.docmeta["doc_length"] = len(doctext)  # type: ignore
+        docin.docmeta["blob_downloaded"] = get_ts()  # type: ignore
 
         result = cat.get_entities(doctext)
         entities = {
             k: m.MedcatEntity.model_validate(v) for k, v in result["entities"].items()
         }
+        docin.docmeta["annotation_completed"] = get_ts()  # type: ignore
+
         medcatoutput = m.MedcatOutput(
             docid=docin.docid,
             text=doctext,
             entities=entities,
-            docmeta=docmeta,
+            docmeta=docin.docmeta,
             modelmeta=WORKER_NAME,
         )
-
+        # Add docext to this.
         docout = DocOut(docid=docin.docid, response=medcatoutput.model_dump())
-        docmeta["annotation_completed"] = get_ts()
 
         response = await AzureBlobStorage(docin.dest.unicode_string()).write(
             blob_name=f"{docin.docname}.json", data=docout.model_dump_json()
         )
 
-        docmeta["blob_uploaded"] = get_ts()
+        docin.docmeta["blob_uploaded"] = get_ts()  # type: ignore
 
         await msg.ack()
 
