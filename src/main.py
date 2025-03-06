@@ -185,23 +185,23 @@ async def process_message(
     logger: Logger,
     cat: CAT = Context("cat"),
 ):
+    # ToDo: This try block is probably unncessary as FastAPI has already validated the request
+
     try:
         # If body is encrypted, decrypt here.
         # eg. doc: DocIn = decrypt(body)
-
-        # Dictionary for storing logging information
 
         docin = AzureBlobDocIn(**body)
 
     except Exception as e:
         logger.error("Error parsing message - {body}. {e}")
         out = {
-            "error": e.args,
+            "error": str(e),
             "correlation_id": msg.correlation_id,
             "message_id": msg.message_id,
         }
         response = await broker.publish(
-            message=out,
+            message=out,  # type: ignore
             correlation_id=msg.correlation_id,
             message_id=msg.message_id,
             queue=queues.qerr,
@@ -259,6 +259,8 @@ async def process_message(
 
         out = {
             "docid": docin.docid,
+            "docmeta": docin.docmeta,
+            "modelmeta": WORKER_NAME,
             "error": str(e),
             "correlation_id": msg.correlation_id,
             "message_id": msg.message_id,
