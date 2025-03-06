@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -267,7 +268,7 @@ async def process_message(
         }
 
         response = await AzureBlobStorage(docin.dest.unicode_string()).write(
-            blob_name=f"{docin.docname}.err", data=out
+            blob_name=f"{docin.docname}.err", data=json.dumps(out)
         )
         await msg.ack()
 
