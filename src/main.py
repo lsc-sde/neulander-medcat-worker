@@ -266,6 +266,9 @@ async def process_message(
             "message_id": msg.message_id,
         }
 
+        response = await AzureBlobStorage(docin.dest.unicode_string()).write(
+            blob_name=f"{docin.docname}.err", data=out
+        )
         await msg.ack()
 
     finally:
